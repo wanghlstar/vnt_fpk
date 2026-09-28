@@ -18,6 +18,14 @@ on:
         required: true
         default: true
         type: boolean
+
+  push:
+    branches:
+      - main
+    paths:
+      - 'vnt/**'
+      - 'vnts/**'
+      - '.github/workflows/build.yml'
   
 env:
   TZ: Asia/Shanghai
@@ -79,7 +87,7 @@ jobs:
         sed -i "s/-time/-$TODAY/g" vnts/manifest
     
      - name: 打包 all 所有架构 VNT客户端
-       if: ${{ matrix.target == 'VNT客户端-all' && github.event.inputs.vnt == 'true' }}
+       if: ${{ matrix.target == 'VNT客户端-all' && github.event.inputs.vnt != 'false' }}
        run: |
         echo -e "\033[32m ===> 开始打包 all VNT客户端 vnt-cli.fpk 包 <=== \033[0m"
         
@@ -93,7 +101,7 @@ jobs:
         echo -e "\033[32m ✅ 打包 vnt-cli_all.fpk 包完成！\033[0m"
 
      - name: 打包 x86 架构 VNT客户端
-       if: ${{ matrix.target == 'VNT客户端-x86' && github.event.inputs.vnt == 'true' }}
+       if: ${{ matrix.target == 'VNT客户端-x86' && github.event.inputs.vnt != 'false' }}
        run: |
         echo -e "\033[32m ===> 开始打包 x86 VNT客户端 vnt-cli.fpk 包 <=== \033[0m"
         
@@ -111,7 +119,7 @@ jobs:
         echo -e "\033[32m ✅ 打包 vnt-cli_x86.fpk 包完成！\033[0m"
 
      - name: 打包 arm 架构 VNT客户端
-       if: ${{ matrix.target == 'VNT客户端-arm' && github.event.inputs.vnt == 'true' }}
+       if: ${{ matrix.target == 'VNT客户端-arm' && github.event.inputs.vnt != 'false' }}
        run: |
         echo -e "\033[32m ===> 开始打包 arm VNT客户端 vnt-cli.fpk 包 <=== \033[0m"
         
@@ -130,7 +138,7 @@ jobs:
         echo -e "\033[32m ✅ 打包 vnt-cli_arm.fpk 包完成！\033[0m"
 
      - name: 打包 all 所有架构 VNTS服务端
-       if: ${{ matrix.target == 'VNTS服务端-all' && github.event.inputs.vnts == 'true' }}
+       if: ${{ matrix.target == 'VNTS服务端-all' && github.event.inputs.vnts != 'false' }}
        run: |
         echo -e "\033[32m ===> 开始打包 all VNTS服务端 vnts.fpk 包 <=== \033[0m"
         
@@ -144,7 +152,7 @@ jobs:
         echo -e "\033[32m ✅ 打包 vnts_all.fpk 包完成！\033[0m"
 
      - name: 打包 x86 架构 VNTS服务端
-       if: ${{ matrix.target == 'VNTS服务端-x86' && github.event.inputs.vnts == 'true' }}
+       if: ${{ matrix.target == 'VNTS服务端-x86' && github.event.inputs.vnts != 'false' }}
        run: |
         echo -e "\033[32m ===> 开始打包 x86 VNTS服务端 vnts.fpk 包 <=== \033[0m"
         
@@ -162,7 +170,7 @@ jobs:
         echo -e "\033[32m ✅ 打包 vnts_x86.fpk 包完成！\033[0m"
 
      - name: 打包 arm 架构 VNTS服务端
-       if: ${{ matrix.target == 'VNTS服务端-arm' && github.event.inputs.vnts == 'true' }}
+       if: ${{ matrix.target == 'VNTS服务端-arm' && github.event.inputs.vnts != 'false' }}
        run: |
         echo -e "\033[32m ===> 开始打包 arm VNTS服务端 vnts.fpk 包 <=== \033[0m"
         
@@ -189,7 +197,7 @@ jobs:
         
   release:
     needs: build
-    if: ${{ github.event.inputs.release == 'true' }}
+    if: ${{ github.event.inputs.release != 'false' }}
     runs-on: ubuntu-latest
     steps:
      - name: Checkout code
