@@ -3,10 +3,11 @@
 LOG_FILE="/var/apps/vnt/var/info.log"
 PID_FILE="/var/apps/vnt/var/app.pid"
 
-VNT_config="/var/apps/vnt/shares/vnt/config.yaml"  
+VNT_config="/var/apps/vnt/shares/vnt/config.yaml"
+VNT_dir="/var/apps/vnt/shares/vnt"
 VNT_bin="/var/apps/vnt/target/bin/vnt-cli"
 
-# write the command to start your program here 
+# write the command to start your program here
 CMD="cd $(dirname ${VNT_bin}) && ./vnt-cli -f ${VNT_config}"
 
 log_msg() {
@@ -63,10 +64,77 @@ check_route_cmd() {
     fi
 }
 
+# 从 config.yaml 中读取 token
+read_vnt_config() {
+    VNT_TOKEN="$(sed -n 's/^[[:space:]]*token:[[:space:]]*\([^#[:space:]]\+\).*/\1/p' "$VNT_config" 2>/dev/null | head -1 | tr -d '\r\n')"
+}
+
+# 从 config.yaml 中读取 device_id 和 name(设备名称)
+read_device_values() {
+    VNT_DEVICE_ID="$(sed -n 's/^[[:space:]]*device_id:[[:space:]]*\([^#[:space:]]*\).*/\1/p' "$VNT_config" 2>/dev/null | head -1 | tr -d '\r\n' | tr -d "\"'")"
+    VNT_NAME="$(sed -n 's/^[[:space:]]*name:[[:space:]]*\([^#]*\).*/\1/p' "$VNT_config" 2>/dev/null | head -1 | tr -d '\r\n' | xargs | tr -d "\"'")"
+}
+
+# device_id 为空(含空字符串)时自动生成并写入配置
+# 服务端凭此分配虚拟ip，需保持稳定（升级/重装不变化）
+ensure_device_id() {
+    read_device_values
+    [ -n "$VNT_DEVICE_ID" ] && return 0
+
+    local id_file="${VNT_dir}/device_id"
+    local did=""
+    [ -s "$id_file" ] && did="$(head -n1 "$id_file" | tr -d '\r\n')"
+    if [ -z "$did" ]; then
+        did="fnos-$(tr -cd 'a-f0-9' < /proc/sys/kernel/random/uuid 2>/dev/null | cut -c1-12)"
+        [ ${#did} -le 5 ] && did="fnos-$RANDOM$RANDOM"
+        echo "$did" > "$id_file" 2>/dev/null
+    fi
+
+    if grep -qE '^[[:space:]]*#*[[:space:]]*device_id:' "$VNT_config" 2>/dev/null; then
+        sed -i "s|^[[:space:]]*#*[[:space:]]*device_id:.*|device_id: ${did}|" "$VNT_config"
+    else
+        echo "device_id: ${did}" >> "$VNT_config"
+    fi
+    VNT_DEVICE_ID="$did"
+    log_msg "device_id 为空，已自动生成并写入配置： ${did}"
+}
+
+# name(设备名称) 为空时使用主机名
+ensure_name() {
+    read_device_values
+    [ -n "$VNT_NAME" ] && return 0
+
+    local hn
+    hn="$(hostname 2>/dev/null | tr -cd 'a-zA-Z0-9._-')"
+    [ -z "$hn" ] && return 0
+
+    if grep -qE '^[[:space:]]*#*[[:space:]]*name:' "$VNT_config" 2>/dev/null; then
+        sed -i "s|^[[:space:]]*#*[[:space:]]*name:.*|name: ${hn}|" "$VNT_config"
+    else
+        echo "name: ${hn}" >> "$VNT_config"
+    fi
+    log_msg "name 为空，已使用主机名作为设备名称： ${hn}"
+}
+
 start_process() {
     if pidof "vnt-cli" >/dev/null 2>&1 && status; then
     	log_msg "程序已运行，跳过启动"
         return 0
+    fi
+
+    # 清理残留的旧进程，避免出现多个实例（精确匹配进程名，避免误伤其他应用）
+    if pidof "vnt-cli" >/dev/null 2>&1; then
+        pkill -x vnt-cli >/dev/null 2>&1
+        sleep 1
+    fi
+    if [ -r "${PID_FILE}" ]; then
+        old_pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if [ -n "$old_pid" ] && check_process "${old_pid}"; then
+            if ! grep -q "vnt-cli" "/proc/${old_pid}/comm" 2>/dev/null; then
+                kill -TERM "${old_pid}" 2>/dev/null
+                sleep 1
+            fi
+        fi
     fi
     rm -f "${PID_FILE}" >/dev/null 2>&1
 
@@ -74,31 +142,49 @@ start_process() {
     > "${LOG_FILE}"
     log_msg "开始运行 ..."
 
-    # 尝试停止可能残留的旧实例
-    ${VNT_bin} --stop 2>/dev/null
-
-    # 确保配置文件存在
+    # 确保配置文件和数据目录存在，首次运行生成初始配置模板
+    mkdir -p "${VNT_dir}" >/dev/null 2>&1
+    if [ ! -s "${VNT_config}" ] && [ -f "${VNT_bin%/*}/config.yaml.example" ]; then
+        cp -f "${VNT_bin%/*}/config.yaml.example" "${VNT_config}" >> ${LOG_FILE} 2>&1
+        log_msg "已生成初始配置模板：${VNT_config}"
+    fi
     [ -f "${VNT_config}" ] || touch "${VNT_config}"
 
-    # 配置文件为空则不启动
-    VNT_TOKEN="$(sed -n 's/^[[:space:]]*token:[[:space:]]*\([^#[:space:]]\+\).*/\1/p' "$VNT_config" 2>/dev/null | tr -d '\r\n')"
-    if [[ -z "$VNT_TOKEN" ]]; then
-        log_msg "⚠️ token缺失！配置文件中必须包含 token 才能启动！"
-        return 0
-    fi
-    
-    # 检查 route 命令
-    check_route_cmd
-
-    # 启动主控制进程（一个 PID 管全部）
+    # 启动看护进程：
+    #   1. 配置不完整时保持应用运行等待填写，避免配置窗口闪退
+    #   2. vnt-cli 异常退出后 5 秒自动重启，不再闪退
     (
-        # 日志监控子进程
+        trap 'kill -TERM $LOG_PID $CHILD_PID $SEG_PID 2>/dev/null; exit 0' SIGINT SIGTERM EXIT
+
+        # 等待配置填写完整
+        echo "waiting" > /var/apps/vnt/var/state 2>/dev/null
+        read_vnt_config
+        if [[ -z "$VNT_TOKEN" ]]; then
+            log_msg "⚠️ 配置不完整！需要包含 token(组网token)"
+            log_msg "应用保持运行中，请在配置页面填写并保存，保存后将自动启动组网"
+            while true; do
+                read_vnt_config
+                [[ -n "$VNT_TOKEN" ]] && break
+                sleep 5
+            done
+        fi
+        log_msg "配置就绪，正在启动组网 ..."
+
+        # device_id 为空时自动生成；name 为空时使用主机名
+        ensure_device_id
+        ensure_name
+        log_msg "启动命令： ${CMD}"
+
+        # 检查 route 命令
+        check_route_cmd
+
+        # 日志轮切监控子进程
         {
             while true; do
                 if [[ -f "${LOG_FILE}" ]]; then
-                    LOG_SIZE=$(stat -c%s "${LOG_FILE}")
-                    if (( LOG_SIZE > 5*1024*1024 )); then
-                        tail -c $((2*1024*1024)) "${LOG_FILE}" > "${LOG_FILE}.tmp" \
+                    LOG_SIZE=$(stat -c%s "${LOG_FILE}" 2>/dev/null)
+                    if [[ "$LOG_SIZE" =~ ^[0-9]+$ ]] && (( LOG_SIZE > 5*1024*1024 )); then
+                        tail -c $((2*1024*1024)) "${LOG_FILE}" > "${LOG_FILE}.tmp" 2>/dev/null \
                             && mv "${LOG_FILE}.tmp" "${LOG_FILE}"
                     fi
                 fi
@@ -107,54 +193,52 @@ start_process() {
         } &
         LOG_PID=$!
 
-        # 收到退出信号时，清理子进程
-        trap '
-            kill -TERM '"$LOG_PID"' 2>/dev/null
-            exit 0
-        ' SIGINT SIGTERM EXIT
+        # NAT 转发规则（每次启动只添加一次）
+        tun_name=$(sed -n 's/^[[:space:]]*device_name:[[:space:]]*\([^#]*\).*/\1/p' "${VNT_config}" | tr -d "'\"" | xargs)
+        [ -z "$tun_name" ] && tun_name="vnt-tun"
+        log_msg "添加虚拟网卡 ${tun_name} 的NAT转发规则"
+        sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+        iptables -I FORWARD -o $tun_name -j ACCEPT 2>/dev/null
+        iptables -I FORWARD -i $tun_name -j ACCEPT 2>/dev/null
+        iptables -I INPUT -i $tun_name -j ACCEPT 2>/dev/null
+        iptables -t nat -I POSTROUTING -o $tun_name -j MASQUERADE 2>/dev/null
+        (
+            # 最多等待60秒，避免网卡名不匹配时无限轮询
+            wait_count=0
+            while [ $wait_count -lt 60 ]; do
+                ip_segment=$(ip route | grep -E "dev\s+$tun_name\s+proto\s+kernel" | awk '{print $1}')
 
-        # 启动 vnt-cli（前台 exec，占用当前 PID）
-        cd "$(dirname "${VNT_bin}")" || exit 1
-        exec ./vnt-cli -f "${VNT_config}" >> "${LOG_FILE}" 2>&1
-    ) &
-    MAIN_PID=$!
+                if [ -n "$ip_segment" ]; then
+                    log_msg "添加虚拟网段 ${ip_segment} 的NAT动态伪装规则"
+                    iptables -t nat -I POSTROUTING -s "$ip_segment" -j MASQUERADE 2>/dev/null
+                    break
+                fi
 
-    # 记录唯一 PID
-    echo "${MAIN_PID}" > "${PID_FILE}"
+                sleep 1
+                wait_count=$((wait_count + 1))
+            done
+            [ -n "$ip_segment" ] || log_msg "未检测到 ${tun_name} 网卡的网段信息，跳过动态伪装规则"
+        ) &
+        SEG_PID=$!
 
-    log_msg "启动命令： cd $(dirname ${VNT_bin}) && ./vnt-cli -f ${VNT_config}"
-    log_msg "进程PID： ${MAIN_PID}"
+        # 记录运行时间
+        echo `date +%s` > /var/apps/vnt/var/vntcli_time
+        echo "running" > /var/apps/vnt/var/state 2>/dev/null
 
-    tun_name=$(sed -n 's/^[[:space:]]*device_name:[[:space:]]*\([^#]*\).*/\1/p' "${VNT_config}" | tr -d "'\"" | xargs)
-    # no_proxy=$(sed -n 's/^[[:space:]]*no_proxy:[[:space:]]*\([^#[:space:]]*\).*/\1/p' "${VNT_config}")
-    [ -z "$tun_name" ] && tun_name="vnt-tun"
-    log_msg "添加虚拟网卡 ${tun_name} 的NAT转发规则"
-    iptables -I FORWARD -o $tun_name -j ACCEPT
-    iptables -I FORWARD -i $tun_name -j ACCEPT
-    iptables -I INPUT -i $tun_name -j ACCEPT
-    iptables -t nat -I POSTROUTING -o $tun_name -j MASQUERADE
-    if [ "$no_proxy" = "true" ]; then
-    	sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
-    fi
-    # if [ "$no_proxy" = "true" ]; then
-    (
-        while :; do
-            ip_segment=$(ip route | grep -E "dev\s+$tun_name\s+proto\s+kernel" | awk '{print $1}')
-
-            if [ -n "$ip_segment" ]; then
-                log_msg "添加虚拟网段 ${ip_segment} 的NAT动态伪装规则"
-                iptables -t nat -I POSTROUTING -s "$ip_segment" -j MASQUERADE
-                break
-            fi
-
-            sleep 1
+        # 看护循环：vnt-cli 退出后 5 秒自动重启
+        while true; do
+            cd "$(dirname "${VNT_bin}")" || exit 1
+            ./vnt-cli -f "${VNT_config}" >> "${LOG_FILE}" 2>&1 &
+            CHILD_PID=$!
+            log_msg "进程PID： ${CHILD_PID}"
+            wait "${CHILD_PID}"
+            log_msg "vnt-cli 进程退出，5秒后自动重启 ..."
+            sleep 5
         done
     ) &
-    # fi
-    # iptables -t nat -I POSTROUTING ! -o $tun_name -s 10.26.0.0/24 -j MASQUERADE
-
-    # 记录运行时间
-    echo `date +%s` > /var/apps/vnt/var/vntcli_time
+    MAIN_PID=$!
+    echo "${MAIN_PID}" > "${PID_FILE}"
+    log_msg "看护进程PID： ${MAIN_PID}"
 
     return 0
 }
@@ -164,7 +248,7 @@ stop_process() {
 
     if [ -r "${PID_FILE}" ]; then
         pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
-        
+
         log_msg "进程PID：${pid}"
         if ! check_process "${pid}"; then
             # 进程不存在，删除进程文件
@@ -189,7 +273,7 @@ stop_process() {
             sleep 1
             rm -f "${PID_FILE}"
         else
-            log_msg "vnts进程已结束运行！"
+            log_msg "vnt-cli进程已结束运行！"
         fi
         tun_name=$(sed -n 's/^[[:space:]]*device_name:[[:space:]]*\([^#]*\).*/\1/p' "${VNT_config}" | tr -d "'\"" | xargs)
         [ -z "$tun_name" ] && tun_name="vnt-tun"
@@ -199,13 +283,13 @@ stop_process() {
         iptables -t nat -D POSTROUTING -o $tun_name -j MASQUERADE 2>/dev/null
         ip_segment=$(ip route | grep -E "dev\s+$tun_name\s+proto\s+kernel"| awk '{print $1}')
         [ -z "$ip_segment" ] || iptables -t nat -D POSTROUTING -s $ip_segment -j MASQUERADE 2>/dev/null
-        # iptables -t nat -D POSTROUTING ! -o $tun_name -s 10.26.0.0/24 -j MASQUERADE 2>/dev/null
     fi
+    # 精确匹配进程名停止，避免误伤其他应用（如 vnt2_cli）
     if pidof "vnt-cli" >/dev/null 2>&1; then
-    	${VNT_bin} --stop
-    	killall vnt-cli >/dev/null 2>&1
+        pkill -x vnt-cli >/dev/null 2>&1
     fi
     rm -f "${PID_FILE}" >/dev/null 2>&1
+    rm -f /var/apps/vnt/var/state 2>/dev/null
 
     return 0
 }
@@ -227,7 +311,7 @@ status() {
         else
             # 进程未运行，但pid文件存在 - 应该要删除它
             rm -f "${PID_FILE}"
-        fi    
+        fi
     fi
 
     return 1
@@ -244,9 +328,9 @@ stop)
     ;;
 status)
     # 检查应用运行状态，运行中返回 0，未运行返回 3
-    if status; then 
+    if status; then
         exit 0
-    else 
+    else
         exit 3
     fi
     ;;

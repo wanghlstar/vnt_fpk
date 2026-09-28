@@ -1,0 +1,77 @@
+# ═══════════════════════════════════════════════════════
+# VNT 客户端配置文件
+# 取消下面【必填项】的注释并填写后保存，应用会自动启动组网
+# ═══════════════════════════════════════════════════════
+
+# ─── 必填项 ───
+
+# 组网Token：使用相同的token和服务器,就能组建一个虚拟局域网络
+# token: xxx
+
+# ─── 可选项（不需要的保持注释状态即可）───
+
+# 注册和中继服务器地址，协议支持 udp tcp ws wss，留空使用默认公共服务端
+# server_address: vnt.wherewego.top:29872
+
+# 设备ID：服务端凭此分配虚拟ip，需保持稳定（升级/重装不变化）
+# 注意：不能为空字符串，不填或留空时应用会自动生成并写入
+# device_id: fnos-01
+
+# 设备名称：留空(或不填)则自动使用主机名
+# name: 飞牛NAS
+
+# 自定义虚拟ip，指定的ip不能和其他设备重复，留空则由服务端分配
+# ip: 10.26.0.2
+
+# 组网密码（客户端-客户端加密），相同密码的客户端才能通信
+# password: xxx
+
+# 虚拟网卡名称（默认 vnt-tun）
+# device_name: vnt-tun
+
+# 虚拟网卡MTU（默认1430）
+# mtu: 1430
+
+# 使用tcp连接服务端（默认udp）
+# tcp: false
+
+# 点对网入站：-i 192.168.3.0/24,10.26.0.3 表示接收该网段数据并转发到目标虚拟IP
+# in_ips:
+#   - 192.168.3.0/24,10.26.0.3
+
+# 点对网出站：允许将数据转发到指定网段
+# out_ips:
+#   - 192.168.0.0/24
+
+# 端口映射：udp:0.0.0.0:80-10.26.0.10:80 表示将本地udp 80端口转发到虚拟IP的80端口
+# mapping:
+#   - udp:0.0.0.0:80-10.26.0.10:80
+
+# 本地出口网卡的名称（多WAN接入时需要指定）
+# local_dev: eth0
+
+# 启用数据压缩（lz4）
+# compressor: lz4
+
+# 加密方式：aes_gcm / aes_cbc / aes_ecb / sm4_cbc / chacha20_poly1305 / chacha20 / xor
+# cipher_model: aes_gcm
+
+# 打洞模式：ipv4 / ipv6 / ipv4-tcp / ipv4-udp / ipv6-tcp / ipv6-udp
+# punch_model:
+
+# 传输模式：all / relay（仅中继）/ p2p（仅直连）
+# use_channel: all
+
+# 关闭交互式命令
+# cmd: false
+
+# 允许接入WireGuard客户端（和wg混用时必须开启）
+# allow_wire_guard: false
+
+# STUN服务器
+# stun_server:
+#   - stun.miwifi.com
+
+# DNS服务器
+# dns:
+#   - 223.5.5.5

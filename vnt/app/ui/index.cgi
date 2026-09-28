@@ -37,33 +37,41 @@ if [[ "${DECODED_URI}" == *config.html ]]; then
 fi
   
 # API 端点处理  
-if [[ "$ACTION" == "api_status" ]]; then      
-    RUNNING="false"      
-    PID=""  
-    UPTIME=""  
-      
-    if pidof "vnt-cli" >/dev/null 2>&1; then  
-        RUNNING="true"  
-        PID=$(pidof "vnt-cli" | head -n 1)  
-          
-        # 从文件读取启动时间  
-        if [[ -f "/var/apps/vnt/var/vntcli_time" ]]; then  
+if [[ "$ACTION" == "api_status" ]]; then
+    RUNNING="false"
+    WAITING="false"
+    RESTARTING="false"
+    PID=""
+    UPTIME=""
+
+    if pidof "vnt-cli" >/dev/null 2>&1; then
+        RUNNING="true"
+        PID=$(pidof "vnt-cli" | head -n 1)
+
+        # 从文件读取启动时间
+        if [[ -f "/var/apps/vnt/var/vntcli_time" ]]; then
             start_time=$(cat /var/apps/vnt/var/vntcli_time)
-            if [[ -n "$start_time" ]]; then  
-                time=$(( $(date +%s) - start_time ))  
-                day=$((time / 86400))  
-                [[ "$day" = "0" ]] && day='' || day=" $day天"  
-                time=$(date -u -d @${time} +%H小时%M分%S秒)  
-                UPTIME="${day}${time}"  
-            fi  
-        fi  
-    fi  
-      
-    echo "Status: 200 OK"      
-    echo "Content-Type: application/json"      
-    echo ""      
-    echo "{\"running\": $RUNNING, \"pid\": \"$PID\", \"uptime\": \"$UPTIME\"}"      
-    exit 0      
+            if [[ -n "$start_time" ]]; then
+                time=$(( $(date +%s) - start_time ))
+                day=$((time / 86400))
+                [[ "$day" = "0" ]] && day='' || day=" $day天"
+                time=$(date -u -d @${time} +%H小时%M分%S秒)
+                UPTIME="${day}${time}"
+            fi
+        fi
+    elif [ -r "/var/apps/vnt/var/app.pid" ] && kill -0 "$(head -n 1 /var/apps/vnt/var/app.pid 2>/dev/null | tr -d '[:space:]')" 2>/dev/null; then
+        if [ "$(cat /var/apps/vnt/var/state 2>/dev/null)" = "waiting" ]; then
+            WAITING="true"
+        else
+            RESTARTING="true"
+        fi
+    fi
+
+    echo "Status: 200 OK"
+    echo "Content-Type: application/json"
+    echo ""
+    echo "{\"running\": $RUNNING, \"waiting\": $WAITING, \"restarting\": $RESTARTING, \"pid\": \"$PID\", \"uptime\": \"$UPTIME\"}"
+    exit 0
 fi
   
 if [[ "$ACTION" == "api_info" ]]; then    
@@ -164,13 +172,36 @@ if [[ "$ACTION" == "stop" ]]; then
     $VNT_script stop >/dev/null 2>&1    
 fi     
   
-RUNNING="false"    
-pgrep -f "$VNT_bin" >/dev/null 2>&1 && RUNNING="true"    
+RUNNING="false"
+WAITING="false"
+RESTARTING="false"
+pgrep -f "$VNT_bin" >/dev/null 2>&1 && RUNNING="true"
+if [ "$RUNNING" = "false" ] && [ -r "/var/apps/vnt/var/app.pid" ] && kill -0 "$(head -n 1 /var/apps/vnt/var/app.pid 2>/dev/null | tr -d '[:space:]')" 2>/dev/null; then
+    if [ "$(cat /var/apps/vnt/var/state 2>/dev/null)" = "waiting" ]; then
+        WAITING="true"
+    else
+        RESTARTING="true"
+    fi
+fi
+
+if [ "$RUNNING" = "true" ]; then
+    STATUS_TEXT="运行中"; STATUS_COLOR="#38ef7d"; BTN_TEXT="停止"; BTN_ACTION="stop"; BTN_COLOR="linear-gradient(135deg,#eb3349,#f45c43)"
+elif [ "$WAITING" = "true" ]; then
+    STATUS_TEXT="等待配置"; STATUS_COLOR="#ff9800"; BTN_TEXT="停止"; BTN_ACTION="stop"; BTN_COLOR="linear-gradient(135deg,#eb3349,#f45c43)"
+elif [ "$RESTARTING" = "true" ]; then
+    STATUS_TEXT="重启中"; STATUS_COLOR="#ff9800"; BTN_TEXT="停止"; BTN_ACTION="stop"; BTN_COLOR="linear-gradient(135deg,#eb3349,#f45c43)"
+else
+    STATUS_TEXT="未运行"; STATUS_COLOR="#f45c43"; BTN_TEXT="启动"; BTN_ACTION="start"; BTN_COLOR="linear-gradient(135deg,#11998e,#38ef7d)"
+fi
   
-CONFIG_TEXT=""    
-if [[ -s "$VNT_config" ]]; then    
+CONFIG_TEXT=""
+if [[ ! -s "$VNT_config" ]] && [ -f "/var/apps/vnt/target/bin/config.yaml.example" ]; then
+    mkdir -p "$VNT_dir" 2>/dev/null
+    cp -f "/var/apps/vnt/target/bin/config.yaml.example" "$VNT_config" 2>/dev/null
+fi
+if [[ -s "$VNT_config" ]]; then
     CONFIG_TEXT=$(cat "$VNT_config")
-fi    
+fi  
   
 INFO_TEXT="正在获取中..."    
 ALL_TEXT="正在获取中..."    
@@ -343,12 +374,12 @@ pre {
 <div class="card">    
 <h1>VNT 客户端</h1>    
 <p class="status">状态：    
-<span id="status-indicator" style="color: $(if [ "$RUNNING" = "true" ]; then echo "#38ef7d"; else echo "#f45c43"; fi); font-weight: bold;">    
-$(if [ "$RUNNING" = "true" ]; then echo "运行中"; else echo "未运行"; fi)    
+<span id="status-indicator" style="color: ${STATUS_COLOR}; font-weight: bold;">
+${STATUS_TEXT}
 </span>    
 </p>    
-<button id="control-button" onclick="control('$(if [ "$RUNNING" = "true" ]; then echo "stop"; else echo "start"; fi)')" style="background: $(if [ "$RUNNING" = "true" ]; then echo "linear-gradient(135deg,#eb3349,#f45c43)"; else echo "linear-gradient(135deg,#11998e,#38ef7d)"; fi);">    
-$(if [ "$RUNNING" = "true" ]; then echo "停止"; else echo "启动"; fi)    
+<button id="control-button" onclick="control('${BTN_ACTION}')" style="background: ${BTN_COLOR};">
+${BTN_TEXT}
 </button>    
 <button onclick="showModal('info-modal')" style="background: linear-gradient(135deg,#fa709a,#fee140);">本机信息</button>    
 <button onclick="showModal('all-modal')" style="background: linear-gradient(135deg,#f093fb,#f5576c);">所有设备</button>    
@@ -372,7 +403,7 @@ $(if [ "$RUNNING" = "true" ]; then echo "停止"; else echo "启动"; fi)
 </div>    
 <form method="post">    
 <input type="hidden" name="action" value="save_config">    
-<textarea name="config" placeholder="🤣 糟啦,配置文件为空，会无法启动喔，快去生成一个配置文件保存进来吧~">$CONFIG_TEXT</textarea>    
+<textarea name="config" placeholder="🤣 糟啦，配置文件为空！点右上角“点此生成配置文件”生成后粘贴到此处保存，保存后将自动启动组网">$CONFIG_TEXT</textarea>    
 <br><br>    
 <button type="submit">保存配置</button>    
 </form>    
@@ -588,6 +619,16 @@ async function updateStatus() {
             statusButton.textContent = '停止';      
             statusButton.onclick = () => control('stop');      
             statusButton.style.background = 'linear-gradient(135deg,#eb3349,#f45c43)';      
+        } else if (data.waiting) {
+            statusSpan.innerHTML = '<span style="color: #ff9800;">等待配置</span> <span style="color: #999;">填写下方配置并保存后自动启动</span>';
+            statusButton.textContent = '停止';
+            statusButton.onclick = () => control('stop');
+            statusButton.style.background = 'linear-gradient(135deg,#eb3349,#f45c43)';
+        } else if (data.restarting) {
+            statusSpan.innerHTML = '<span style="color: #ff9800;">重启中</span> <span style="color: #999;">vnt-cli 异常退出，正在自动重启，请查看运行日志</span>';
+            statusButton.textContent = '停止';
+            statusButton.onclick = () => control('stop');
+            statusButton.style.background = 'linear-gradient(135deg,#eb3349,#f45c43)';
         } else {      
             statusSpan.innerHTML = '<span style="color: #f45c43;">未运行</span>';  
             statusButton.textContent = '启动';      
